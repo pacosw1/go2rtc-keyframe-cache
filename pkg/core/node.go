@@ -27,6 +27,10 @@ type Node struct {
 	Input  HandlerFunc
 	Output HandlerFunc
 
+	// OnChildAdded is called when a new child is added to this node
+	// Used by Receiver to send cached keyframes to new consumers
+	OnChildAdded func(child *Node)
+
 	id     uint32
 	childs []*Node
 	parent *Node
@@ -45,6 +49,11 @@ func (n *Node) AppendChild(child *Node) {
 	n.mu.Unlock()
 
 	child.parent = n
+
+	// Notify parent that a child was added (used for keyframe cache)
+	if n.OnChildAdded != nil {
+		n.OnChildAdded(child)
+	}
 }
 
 func (n *Node) RemoveChild(child *Node) {

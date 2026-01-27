@@ -179,3 +179,104 @@ func apiPreload(w http.ResponseWriter, r *http.Request) {
 func apiSchemes(w http.ResponseWriter, r *http.Request) {
 	api.ResponseJSON(w, SupportedSchemes())
 }
+
+// apiCacheStats returns keyframe cache statistics for all streams
+func apiCacheStats(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	src := query.Get("src")
+
+	type ReceiverCacheStats struct {
+		Codec   string `json:"codec"`
+		Packets int    `json:"packets"`
+		Bytes   int    `json:"bytes"`
+	}
+
+	type ProducerCacheStats struct {
+		URL       string               `json:"url"`
+		Receivers []ReceiverCacheStats `json:"receivers,omitempty"`
+	}
+
+	type StreamCacheStats struct {
+		Name      string              `json:"name"`
+		Producers []ProducerCacheStats `json:"producers,omitempty"`
+	}
+
+	type Response struct {
+		Enabled    bool              `json:"enabled"`
+		MaxPackets int               `json:"max_packets"`
+		MaxBytes   int               `json:"max_bytes"`
+		Streams    []StreamCacheStats `json:"streams,omitempty"`
+	}
+
+	resp := Response{
+		Enabled:    KeyframeCacheEnabled,
+		MaxPackets: KeyframeCacheMaxPackets,
+		MaxBytes:   KeyframeCacheMaxBytes,
+	}
+
+	// If specific stream requested
+	if src != "" {
+		stream := Get(src)
+		if stream == nil {
+			http.Error(w, "stream not found", http.StatusNotFound)
+			return
+		}
+
+		stats := StreamCacheStats{Name: src}
+		for _, prod := range stream.producers {
+			prodStats := ProducerCacheStats{
+				URL: prod.url,
+			}
+			for _, recv := range prod.receivers {
+				if recv != nil {
+					packets, bytes := recv.CacheStats()
+					if packets > 0 {
+						codecName := ""
+						if recv.Codec != nil {
+							codecName = recv.Codec.Name
+						}
+						prodStats.Receivers = append(prodStats.Receivers, ReceiverCacheStats{
+							Codec:   codecName,
+							Packets: packets,
+							Bytes:   bytes,
+						})
+					}
+				}
+			}
+			stats.Producers = append(stats.Producers, prodStats)
+		}
+		resp.Streams = []StreamCacheStats{stats}
+	} else {
+		// Return stats for all streams
+		streamsMu.Lock()
+		for name, stream := range streams {
+			stats := StreamCacheStats{Name: name}
+			for _, prod := range stream.producers {
+				prodStats := ProducerCacheStats{
+					URL: prod.url,
+				}
+				for _, recv := range prod.receivers {
+					if recv != nil {
+						packets, bytes := recv.CacheStats()
+						if packets > 0 {
+							codecName := ""
+							if recv.Codec != nil {
+								codecName = recv.Codec.Name
+							}
+							prodStats.Receivers = append(prodStats.Receivers, ReceiverCacheStats{
+								Codec:   codecName,
+								Packets: packets,
+								Bytes:   bytes,
+							})
+						}
+					}
+				}
+				stats.Producers = append(stats.Producers, prodStats)
+			}
+			resp.Streams = append(resp.Streams, stats)
+		}
+		streamsMu.Unlock()
+	}
+
+	api.ResponseJSON(w, resp)
+}

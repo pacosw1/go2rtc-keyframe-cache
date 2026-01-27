@@ -8,19 +8,58 @@ import (
 
 	"github.com/AlexxIT/go2rtc/internal/api"
 	"github.com/AlexxIT/go2rtc/internal/app"
+	"github.com/AlexxIT/go2rtc/pkg/core"
 	"github.com/rs/zerolog"
 )
+
+// KeyframeCacheEnabled controls whether keyframe caching is enabled globally
+var KeyframeCacheEnabled = true
+
+// KeyframeCacheMaxPackets is the maximum number of packets to cache per stream
+var KeyframeCacheMaxPackets = 500
+
+// KeyframeCacheMaxBytes is the maximum size of the cache in bytes per stream
+var KeyframeCacheMaxBytes = 2 * 1024 * 1024 // 2MB
 
 func Init() {
 	var cfg struct {
 		Streams map[string]any    `yaml:"streams"`
 		Publish map[string]any    `yaml:"publish"`
 		Preload map[string]string `yaml:"preload"`
+		// Keyframe caching configuration for instant playback
+		KeyframeCache struct {
+			Enabled    *bool `yaml:"enabled"`
+			MaxPackets *int  `yaml:"max_packets"`
+			MaxBytes   *int  `yaml:"max_bytes"`
+		} `yaml:"keyframe_cache"`
 	}
 
 	app.LoadConfig(&cfg)
 
 	log = app.GetLogger("streams")
+
+	// Apply keyframe cache configuration
+	if cfg.KeyframeCache.Enabled != nil {
+		KeyframeCacheEnabled = *cfg.KeyframeCache.Enabled
+	}
+	if cfg.KeyframeCache.MaxPackets != nil {
+		KeyframeCacheMaxPackets = *cfg.KeyframeCache.MaxPackets
+	}
+	if cfg.KeyframeCache.MaxBytes != nil {
+		KeyframeCacheMaxBytes = *cfg.KeyframeCache.MaxBytes
+	}
+
+	// Apply configuration to core package
+	core.SetGlobalKeyframeCacheConfig(KeyframeCacheEnabled, KeyframeCacheMaxPackets, KeyframeCacheMaxBytes)
+
+	if KeyframeCacheEnabled {
+		log.Info().
+			Int("max_packets", KeyframeCacheMaxPackets).
+			Int("max_bytes", KeyframeCacheMaxBytes).
+			Msg("[keyframe-cache] Enabled for instant playback")
+	} else {
+		log.Info().Msg("[keyframe-cache] Disabled")
+	}
 
 	for name, item := range cfg.Streams {
 		streams[name] = NewStream(item)
@@ -30,6 +69,7 @@ func Init() {
 	api.HandleFunc("api/streams.dot", apiStreamsDOT)
 	api.HandleFunc("api/preload", apiPreload)
 	api.HandleFunc("api/schemes", apiSchemes)
+	api.HandleFunc("api/cache", apiCacheStats)
 
 	if cfg.Publish == nil && cfg.Preload == nil {
 		return

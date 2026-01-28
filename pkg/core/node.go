@@ -40,6 +40,11 @@ type Node struct {
 	// need instant playback from cached keyframes.
 	SkipTimeshift bool
 
+	// ReadySignal - if set, the timeshift pump will wait for this channel
+	// to be closed before sending buffered packets. Use for WebRTC consumers
+	// that need the connection to be established before receiving packets.
+	ReadySignal chan struct{}
+
 	id     uint32
 	childs []*Node
 	parent *Node

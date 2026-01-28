@@ -415,6 +415,19 @@ func (r *Receiver) pumpBufferToChild(child *Node, state *childBufferState) {
 		state.pumping = false
 	}()
 
+	// Wait for ready signal if set (e.g., WebRTC connection established)
+	// This prevents sending packets before the transport is ready
+	if child.ReadySignal != nil {
+		log.Debug().Uint32("childId", child.id).Msg("[timeshift] Waiting for ready signal...")
+		select {
+		case <-child.ReadySignal:
+			log.Debug().Uint32("childId", child.id).Msg("[timeshift] Ready signal received, starting pump")
+		case <-state.stopPump:
+			log.Debug().Uint32("childId", child.id).Msg("[timeshift] Pump stopped while waiting for ready")
+			return
+		}
+	}
+
 	// Note: Parameter sets (VPS/SPS/PPS) are included in buffer playback
 	// We start from a position before the keyframe that includes them
 

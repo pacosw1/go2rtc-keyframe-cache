@@ -136,6 +136,11 @@ func NewConn(pc *webrtc.PeerConnection) *Conn {
 		case webrtc.PeerConnectionStateConnected:
 			for _, sender := range c.Senders {
 				sender.Start()
+				// Signal that the connection is ready - this unblocks the
+				// timeshift pump which was waiting before sending cached packets
+				if sender.ReadySignal != nil {
+					close(sender.ReadySignal)
+				}
 			}
 		case webrtc.PeerConnectionStateDisconnected, webrtc.PeerConnectionStateFailed, webrtc.PeerConnectionStateClosed:
 			// disconnect event comes earlier, than failed

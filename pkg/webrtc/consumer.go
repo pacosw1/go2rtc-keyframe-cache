@@ -204,6 +204,10 @@ func (c *Conn) AddTrack(media *core.Media, codec *core.Codec, track *core.Receiv
 	// TODO: rewrite this dirty logic
 	// maybe not best solution, but ActiveProducer connected before AddTrack
 	if c.Mode != core.ModeActiveProducer {
+		// Set up ReadySignal so the timeshift pump waits for connection
+		// The signal will be closed when PeerConnectionStateConnected fires
+		sender.ReadySignal = make(chan struct{})
+
 		// Start BEFORE Bind - Bind triggers the timeshift pump goroutine,
 		// so we need the consumer goroutine running first to avoid dropping
 		// buffered packets due to channel backpressure

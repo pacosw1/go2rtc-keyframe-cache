@@ -409,129 +409,117 @@ func clonePacket(p *Packet) *Packet {
 	return clone
 }
 
-// pumpBufferToChild sends buffered packets to a child until it catches up or gets a live keyframe
+// pumpBufferToChild sends cached keyframe to child then switches to live
+// SIMPLIFIED: No fast-forward, just keyframe → live
 func (r *Receiver) pumpBufferToChild(child *Node, state *childBufferState) {
 	defer func() {
 		state.pumping = false
 	}()
 
 	// Wait for ready signal if set (e.g., WebRTC connection established)
-	// This prevents sending packets before the transport is ready
 	if child.ReadySignal != nil {
-		log.Debug().Uint32("childId", child.id).Msg("[timeshift] Waiting for ready signal...")
+		log.Info().Uint32("childId", child.id).Msg("[keyframe-cache] Waiting for connection ready...")
 		select {
 		case <-child.ReadySignal:
-			log.Debug().Uint32("childId", child.id).Msg("[timeshift] Ready signal received, starting pump")
+			log.Info().Uint32("childId", child.id).Msg("[keyframe-cache] Connection ready, sending cached keyframe")
 		case <-state.stopPump:
-			log.Debug().Uint32("childId", child.id).Msg("[timeshift] Pump stopped while waiting for ready")
+			log.Debug().Uint32("childId", child.id).Msg("[keyframe-cache] Stopped while waiting")
 			return
 		}
 	}
 
-	// Note: Parameter sets (VPS/SPS/PPS) are included in buffer playback
-	// We start from a position before the keyframe that includes them
-
-	// Get keyframe position for burst mode calculation
+	// Get keyframe position and current head
 	r.ringMu.RLock()
 	keyframePos := r.ringKeyframePos
+	bufferLen := len(r.ringBuffer)
+	head := r.ringHead
 	r.ringMu.RUnlock()
 
-	// Pump packets from buffer
-	packetsent := 0
-	keyframeSent := false
-	burstPackets := 0 // Count packets sent in initial burst (no delay)
-	var firstTimestamp, lastTimestamp uint32
-	nalTypesFound := make(map[string]int)
+	if keyframePos < 0 {
+		log.Warn().Uint32("childId", child.id).Msg("[keyframe-cache] No keyframe in buffer")
+		r.childStateMu.Lock()
+		state.mode = "live"
+		r.childStateMu.Unlock()
+		return
+	}
 
-	for {
+	// Send ALL packets from keyframePos until we see the Marker bit
+	// H.265 keyframes are fragmented into many FU packets - we need all of them!
+	// The Marker bit indicates the end of the access unit (complete frame)
+	packetsSent := 0
+	readPos := keyframePos
+	foundMarker := false
+
+	log.Info().
+		Uint32("childId", child.id).
+		Int("keyframePos", keyframePos).
+		Int("head", head).
+		Msg("[keyframe-cache] Starting to send keyframe packets")
+
+	for !foundMarker {
 		select {
 		case <-state.stopPump:
-			log.Debug().Uint32("childId", child.id).Int("sent", packetsent).Int("burst", burstPackets).Msg("[timeshift] Pump stopped, live keyframe arrived")
+			log.Debug().Uint32("childId", child.id).Int("sent", packetsSent).Msg("[keyframe-cache] Stopped during send")
 			return
 		default:
 		}
 
-		// Check if we're still in buffering mode
-		r.childStateMu.RLock()
-		currentState := r.childState[child]
-		r.childStateMu.RUnlock()
-		if currentState == nil || currentState.mode != "buffering" {
-			return
-		}
-
-		// Get next packet from buffer and clone it
-		// Clone is necessary because consumers modify packet fields (SequenceNumber)
 		r.ringMu.RLock()
-		readPos := state.readPos
-		head := r.ringHead
 		packet := clonePacket(r.ringBuffer[readPos])
 		r.ringMu.RUnlock()
 
 		if packet == nil {
-			// Buffer slot is empty (shouldn't happen normally)
-			state.readPos = (readPos + 1) % len(r.ringBuffer)
-			continue
+			// Reached end of buffer or empty slot
+			log.Warn().Uint32("childId", child.id).Int("pos", readPos).Msg("[keyframe-cache] Empty slot, stopping")
+			break
 		}
 
-		// Track timestamps for debugging
-		if packetsent == 0 {
-			firstTimestamp = packet.Timestamp
-		}
-		lastTimestamp = packet.Timestamp
-
-		// Classify and track NAL types for debugging
 		info := r.classifyNAL(packet)
-		if info.isIDR {
-			nalTypesFound["keyframe"]++
-		} else if info.isParamSet {
-			nalTypesFound["paramset"]++
-		} else {
-			nalTypesFound["other"]++
-		}
+		log.Debug().
+			Uint32("childId", child.id).
+			Int("pos", readPos).
+			Str("type", info.typeName).
+			Int("payloadLen", len(packet.Payload)).
+			Bool("marker", packet.Marker).
+			Msg("[keyframe-cache] Sending packet")
 
-		// Check if this is the keyframe position
-		if readPos == keyframePos {
-			keyframeSent = true
-		}
-
-		// Send cloned packet to child
 		child.Input(packet)
-		packetsent++
+		packetsSent++
 
-		// Advance read position
-		state.readPos = (readPos + 1) % len(r.ringBuffer)
-
-		// Check if we've caught up to live position
-		if state.readPos == head {
-			log.Info().
-				Uint32("childId", child.id).
-				Int("sent", packetsent).
-				Int("burst", burstPackets).
-				Uint32("firstTs", firstTimestamp).
-				Uint32("lastTs", lastTimestamp).
-				Int("keyframes", nalTypesFound["keyframe"]).
-				Int("paramsets", nalTypesFound["paramset"]).
-				Int("other", nalTypesFound["other"]).
-				Msg("[timeshift] Caught up, switching to live")
-			r.childStateMu.Lock()
-			state.mode = "live"
-			r.childStateMu.Unlock()
-			return
+		// Check if this packet has the Marker bit set (end of access unit)
+		if packet.Marker {
+			foundMarker = true
+			log.Info().Uint32("childId", child.id).Int("sent", packetsSent).Msg("[keyframe-cache] Found marker, keyframe complete")
+			break
 		}
 
-		// BURST MODE: Send VPS/SPS/PPS + keyframe + a few extra frames with NO DELAY
-		// This ensures the decoder can start immediately (< 100ms) instead of waiting
-		// for paced delivery. After the keyframe + 30 extra packets, start pacing.
-		if !keyframeSent || burstPackets < 30 {
-			burstPackets++
-			// No sleep - send as fast as possible for decoder init
-			continue
+		// Move to next position
+		readPos = (readPos + 1) % bufferLen
+
+		// Safety: don't wrap around past head
+		if readPos == head {
+			log.Warn().Uint32("childId", child.id).Int("sent", packetsSent).Msg("[keyframe-cache] Reached head without marker")
+			break
 		}
 
-		// PACED MODE: After burst, pace packets to catch up without overwhelming receiver
-		// At 30fps, real-time is ~33ms per frame. Send at ~2ms to catch up ~15x faster
-		time.Sleep(2 * time.Millisecond)
+		// Safety: limit to reasonable number of packets
+		if packetsSent > 500 {
+			log.Warn().Uint32("childId", child.id).Msg("[keyframe-cache] Too many packets, stopping")
+			break
+		}
 	}
+
+	log.Info().
+		Uint32("childId", child.id).
+		Int("packetsSent", packetsSent).
+		Int("keyframePos", keyframePos).
+		Bool("complete", foundMarker).
+		Msg("[keyframe-cache] Keyframe sent, switching to live")
+
+	// Switch to live mode immediately
+	r.childStateMu.Lock()
+	state.mode = "live"
+	r.childStateMu.Unlock()
 }
 
 // cleanupChildState removes state for a disconnected child

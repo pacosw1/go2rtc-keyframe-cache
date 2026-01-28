@@ -389,12 +389,20 @@ func (r *Receiver) pumpBufferToChild(child *Node, state *childBufferState) {
 	// Note: Parameter sets (VPS/SPS/PPS) are included in buffer playback
 	// We start from a position before the keyframe that includes them
 
+	// Get keyframe position for burst mode calculation
+	r.ringMu.RLock()
+	keyframePos := r.ringKeyframePos
+	r.ringMu.RUnlock()
+
 	// Pump packets from buffer
 	packetsent := 0
+	keyframeSent := false
+	burstPackets := 0 // Count packets sent in initial burst (no delay)
+
 	for {
 		select {
 		case <-state.stopPump:
-			log.Debug().Uint32("childId", child.id).Int("sent", packetsent).Msg("[timeshift] Pump stopped, live keyframe arrived")
+			log.Debug().Uint32("childId", child.id).Int("sent", packetsent).Int("burst", burstPackets).Msg("[timeshift] Pump stopped, live keyframe arrived")
 			return
 		default:
 		}
@@ -421,6 +429,11 @@ func (r *Receiver) pumpBufferToChild(child *Node, state *childBufferState) {
 			continue
 		}
 
+		// Check if this is the keyframe position
+		if readPos == keyframePos {
+			keyframeSent = true
+		}
+
 		// Send cloned packet to child
 		child.Input(packet)
 		packetsent++
@@ -430,17 +443,25 @@ func (r *Receiver) pumpBufferToChild(child *Node, state *childBufferState) {
 
 		// Check if we've caught up to live position
 		if state.readPos == head {
-			log.Debug().Uint32("childId", child.id).Int("sent", packetsent).Msg("[timeshift] Caught up, switching to live")
+			log.Debug().Uint32("childId", child.id).Int("sent", packetsent).Int("burst", burstPackets).Msg("[timeshift] Caught up, switching to live")
 			r.childStateMu.Lock()
 			state.mode = "live"
 			r.childStateMu.Unlock()
 			return
 		}
 
-		// Pace packets: send faster than real-time to catch up
-		// At 30fps, real-time is ~33ms per frame. Send at ~10ms to catch up ~3x faster
-		// But don't go too fast or we'll overwhelm the receiver
-		time.Sleep(5 * time.Millisecond)
+		// BURST MODE: Send VPS/SPS/PPS + keyframe + a few extra frames with NO DELAY
+		// This ensures the decoder can start immediately (< 100ms) instead of waiting
+		// for paced delivery. After the keyframe + 30 extra packets, start pacing.
+		if !keyframeSent || burstPackets < 30 {
+			burstPackets++
+			// No sleep - send as fast as possible for decoder init
+			continue
+		}
+
+		// PACED MODE: After burst, pace packets to catch up without overwhelming receiver
+		// At 30fps, real-time is ~33ms per frame. Send at ~2ms to catch up ~15x faster
+		time.Sleep(2 * time.Millisecond)
 	}
 }
 

@@ -104,15 +104,20 @@ func (s *Stream) stopProducers() {
 producers:
 	for _, producer := range s.producers {
 		for _, track := range producer.receivers {
-			if len(track.Senders()) > 0 {
+			senderCount := len(track.Senders())
+			if senderCount > 0 {
+				log.Trace().Str("url", producer.url).Int("senders", senderCount).Msg("[streams] producer has active senders, keeping alive")
 				continue producers
 			}
 		}
 		for _, track := range producer.senders {
-			if len(track.Senders()) > 0 {
+			senderCount := len(track.Senders())
+			if senderCount > 0 {
+				log.Trace().Str("url", producer.url).Int("senders", senderCount).Msg("[streams] producer has active senders (from sender tracks), keeping alive")
 				continue producers
 			}
 		}
+		log.Info().Str("url", producer.url).Msg("[streams] Stopping producer - no active senders")
 		producer.stop()
 	}
 	s.mu.Unlock()

@@ -229,7 +229,7 @@ func apiCacheStats(w http.ResponseWriter, r *http.Request) {
 			}
 			for _, recv := range prod.receivers {
 				if recv != nil {
-					packets, bytes := recv.CacheStats()
+					packets, _, _ := recv.BufferStats()
 					if packets > 0 {
 						codecName := ""
 						if recv.Codec != nil {
@@ -238,7 +238,7 @@ func apiCacheStats(w http.ResponseWriter, r *http.Request) {
 						prodStats.Receivers = append(prodStats.Receivers, ReceiverCacheStats{
 							Codec:   codecName,
 							Packets: packets,
-							Bytes:   bytes,
+							Bytes:   0, // BufferStats doesn't track bytes anymore
 						})
 					}
 				}
@@ -257,7 +257,7 @@ func apiCacheStats(w http.ResponseWriter, r *http.Request) {
 				}
 				for _, recv := range prod.receivers {
 					if recv != nil {
-						packets, bytes := recv.CacheStats()
+						packets, _, _ := recv.BufferStats()
 						if packets > 0 {
 							codecName := ""
 							if recv.Codec != nil {
@@ -266,7 +266,7 @@ func apiCacheStats(w http.ResponseWriter, r *http.Request) {
 							prodStats.Receivers = append(prodStats.Receivers, ReceiverCacheStats{
 								Codec:   codecName,
 								Packets: packets,
-								Bytes:   bytes,
+								Bytes:   0, // BufferStats doesn't track bytes anymore
 							})
 						}
 					}

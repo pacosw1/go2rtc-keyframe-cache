@@ -31,6 +31,15 @@ type Node struct {
 	// Used by Receiver to send cached keyframes to new consumers
 	OnChildAdded func(child *Node)
 
+	// OnChildRemoved is called when a child is removed from this node
+	// Used by Receiver to cleanup per-child state
+	OnChildRemoved func(child *Node)
+
+	// SkipTimeshift - if true, this node bypasses time-shift buffering
+	// and receives live packets immediately. Use for recorders that don't
+	// need instant playback from cached keyframes.
+	SkipTimeshift bool
+
 	id     uint32
 	childs []*Node
 	parent *Node
@@ -65,6 +74,11 @@ func (n *Node) RemoveChild(child *Node) {
 		}
 	}
 	n.mu.Unlock()
+
+	// Notify parent that a child was removed (used for cleanup)
+	if n.OnChildRemoved != nil {
+		n.OnChildRemoved(child)
+	}
 }
 
 func (n *Node) Close() {

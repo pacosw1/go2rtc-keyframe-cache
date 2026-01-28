@@ -1,7 +1,9 @@
 package core
 
 import (
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestKeyframeCacheH265(t *testing.T) {
@@ -10,49 +12,64 @@ func TestKeyframeCacheH265(t *testing.T) {
 	media := &Media{Kind: KindVideo}
 	recv := NewReceiver(media, codec)
 
-	// Verify cache is empty initially
-	packets, bytes := recv.CacheStats()
-	if packets != 0 || bytes != 0 {
-		t.Errorf("Expected empty cache, got %d packets, %d bytes", packets, bytes)
+	// Verify buffer is empty initially
+	packets, kfPos, _ := recv.BufferStats()
+	if packets != 0 {
+		t.Errorf("Expected empty buffer, got %d packets", packets)
+	}
+	if kfPos != -1 {
+		t.Errorf("Expected no keyframe pos (-1), got %d", kfPos)
 	}
 
 	// Send a non-keyframe packet (P-frame, NAL type 1)
 	pFrame := &Packet{Payload: []byte{0x02, 0x00, 0x00, 0x00, 0x00}} // NAL type 1
 	recv.Input(pFrame)
 
-	// Cache should still be empty (no keyframe received yet)
-	packets, bytes = recv.CacheStats()
-	if packets != 0 {
-		t.Errorf("Expected empty cache before keyframe, got %d packets", packets)
+	// Buffer should have packet but no keyframe position
+	packets, kfPos, _ = recv.BufferStats()
+	if packets != 1 {
+		t.Errorf("Expected 1 packet in buffer, got %d", packets)
+	}
+	if kfPos != -1 {
+		t.Errorf("Expected no keyframe pos before keyframe, got %d", kfPos)
 	}
 
 	// Send a keyframe (IDR frame, NAL type 19)
 	keyframe := &Packet{Payload: []byte{0x26, 0x00, 0x00, 0x00, 0x00}} // NAL type 19
 	recv.Input(keyframe)
 
-	// Cache should now have the keyframe
-	packets, bytes = recv.CacheStats()
-	if packets != 1 {
-		t.Errorf("Expected 1 packet in cache after keyframe, got %d", packets)
+	// Buffer should have keyframe position
+	packets, kfPos, _ = recv.BufferStats()
+	if packets != 2 {
+		t.Errorf("Expected 2 packets in buffer, got %d", packets)
+	}
+	if kfPos != 1 { // Second packet is keyframe
+		t.Errorf("Expected keyframe at pos 1, got %d", kfPos)
 	}
 
 	// Send another P-frame
 	pFrame2 := &Packet{Payload: []byte{0x02, 0x00, 0x00, 0x00, 0x00}}
 	recv.Input(pFrame2)
 
-	// Cache should have both packets
-	packets, bytes = recv.CacheStats()
-	if packets != 2 {
-		t.Errorf("Expected 2 packets in cache, got %d", packets)
+	// Buffer should have 3 packets
+	packets, kfPos, _ = recv.BufferStats()
+	if packets != 3 {
+		t.Errorf("Expected 3 packets in buffer, got %d", packets)
+	}
+	if kfPos != 1 { // Keyframe still at pos 1
+		t.Errorf("Expected keyframe still at pos 1, got %d", kfPos)
 	}
 
-	// Send a new keyframe - should reset cache
+	// Send a new keyframe - keyframe pos should update
 	keyframe2 := &Packet{Payload: []byte{0x28, 0x00, 0x00, 0x00, 0x00}} // NAL type 20
 	recv.Input(keyframe2)
 
-	packets, bytes = recv.CacheStats()
-	if packets != 1 {
-		t.Errorf("Expected 1 packet after new keyframe (cache reset), got %d", packets)
+	packets, kfPos, _ = recv.BufferStats()
+	if packets != 4 {
+		t.Errorf("Expected 4 packets in buffer, got %d", packets)
+	}
+	if kfPos != 3 { // New keyframe at pos 3
+		t.Errorf("Expected new keyframe at pos 3, got %d", kfPos)
 	}
 }
 
@@ -73,20 +90,32 @@ func TestKeyframeCacheSendToNewConsumer(t *testing.T) {
 
 	// Track packets received by new consumer
 	var receivedPackets []*Packet
+	var mu sync.Mutex
 
 	// Create a new consumer (child node)
 	consumer := &Node{
+		id: NewID(),
 		Input: func(pkt *Packet) {
+			mu.Lock()
 			receivedPackets = append(receivedPackets, pkt)
+			mu.Unlock()
 		},
 	}
 
-	// Add consumer - should receive cached keyframe packets
+	// Add consumer - should start in buffer mode and receive cached packets
 	recv.AppendChild(consumer)
 
-	// Consumer should have received 3 cached packets
-	if len(receivedPackets) != 3 {
-		t.Errorf("Expected new consumer to receive 3 cached packets, got %d", len(receivedPackets))
+	// Wait for buffer pump to send packets
+	time.Sleep(200 * time.Millisecond)
+
+	mu.Lock()
+	count := len(receivedPackets)
+	mu.Unlock()
+
+	// Consumer should have received buffered packets (from keyframe onwards)
+	// Note: With new time-shift buffer, consumer starts at keyframe position
+	if count < 3 {
+		t.Errorf("Expected at least 3 packets, got %d", count)
 	}
 }
 
@@ -102,10 +131,13 @@ func TestKeyframeCacheH264(t *testing.T) {
 	pFrame := &Packet{Payload: []byte{0x41, 0x00, 0x00, 0x00, 0x00}}
 	recv.Input(pFrame)
 
-	// Cache should be empty
-	packets, _ := recv.CacheStats()
-	if packets != 0 {
-		t.Errorf("Expected empty cache before keyframe, got %d packets", packets)
+	// Buffer should have packet but no keyframe
+	packets, kfPos, _ := recv.BufferStats()
+	if packets != 1 {
+		t.Errorf("Expected 1 packet in buffer, got %d", packets)
+	}
+	if kfPos != -1 {
+		t.Errorf("Expected no keyframe before IDR, got pos %d", kfPos)
 	}
 
 	// Send a keyframe (IDR slice, NAL type 5)
@@ -113,10 +145,13 @@ func TestKeyframeCacheH264(t *testing.T) {
 	keyframe := &Packet{Payload: []byte{0x65, 0x00, 0x00, 0x00, 0x00}}
 	recv.Input(keyframe)
 
-	// Cache should have the keyframe
-	packets, _ = recv.CacheStats()
-	if packets != 1 {
-		t.Errorf("Expected 1 packet in cache after keyframe, got %d", packets)
+	// Buffer should have keyframe position
+	packets, kfPos, _ = recv.BufferStats()
+	if packets != 2 {
+		t.Errorf("Expected 2 packets in buffer, got %d", packets)
+	}
+	if kfPos != 1 {
+		t.Errorf("Expected keyframe at pos 1, got %d", kfPos)
 	}
 }
 
@@ -132,10 +167,10 @@ func TestKeyframeCacheDisabled(t *testing.T) {
 	keyframe := &Packet{Payload: []byte{0x26, 0x00, 0x00, 0x00, 0x00}}
 	recv.Input(keyframe)
 
-	// Cache should remain empty when disabled
-	packets, _ := recv.CacheStats()
+	// Buffer should remain empty when disabled
+	packets, _, _ := recv.BufferStats()
 	if packets != 0 {
-		t.Errorf("Expected empty cache when disabled, got %d packets", packets)
+		t.Errorf("Expected empty buffer when disabled, got %d packets", packets)
 	}
 }
 
@@ -149,9 +184,9 @@ func TestKeyframeCacheAudioNoCache(t *testing.T) {
 	packet := &Packet{Payload: []byte{0x01, 0x02, 0x03, 0x04}}
 	recv.Input(packet)
 
-	// Cache should be empty for audio
-	packets, _ := recv.CacheStats()
+	// Buffer should be empty for audio (buffering disabled)
+	packets, _, _ := recv.BufferStats()
 	if packets != 0 {
-		t.Errorf("Expected no caching for audio, got %d packets", packets)
+		t.Errorf("Expected no buffering for audio, got %d packets", packets)
 	}
 }

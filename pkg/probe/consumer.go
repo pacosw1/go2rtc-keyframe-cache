@@ -40,6 +40,9 @@ func Create(name string, query url.Values) *Probe {
 
 func (p *Probe) AddTrack(media *core.Media, codec *core.Codec, track *core.Receiver) error {
 	sender := core.NewSender(media, track.Codec)
+	// Preload consumers should skip timeshift - they exist to keep the stream alive
+	// and populate the buffer for OTHER consumers (like WebRTC viewers)
+	sender.SkipTimeshift = true
 	sender.Handler = func(pkt *core.Packet) {
 		p.Send += len(pkt.Payload)
 	}

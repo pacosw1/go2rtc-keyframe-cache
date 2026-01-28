@@ -292,9 +292,14 @@ func (r *Receiver) switchBufferingChildrenToLive() {
 
 // startChildInBufferMode starts a new child playing from the buffer
 func (r *Receiver) startChildInBufferMode(child *Node) {
+	codecName := ""
+	if r.Codec != nil {
+		codecName = r.Codec.Name
+	}
+
 	// Skip time-shift for consumers that don't need it (e.g., recorders)
 	if child.SkipTimeshift {
-		log.Debug().Uint32("childId", child.id).Msg("[timeshift] Skipped (consumer opted out)")
+		log.Info().Uint32("childId", child.id).Str("codec", codecName).Msg("[timeshift] Skipped (consumer opted out)")
 		r.childStateMu.Lock()
 		r.childState[child] = &childBufferState{mode: "live"}
 		r.childStateMu.Unlock()
@@ -324,7 +329,7 @@ func (r *Receiver) startChildInBufferMode(child *Node) {
 
 	// If no keyframe in buffer yet, start in live mode
 	if keyframePos < 0 || ringSize == 0 {
-		log.Debug().Uint32("childId", child.id).Msg("[timeshift] No keyframe yet, starting live")
+		log.Info().Uint32("childId", child.id).Str("codec", codecName).Int("keyframePos", keyframePos).Int("ringSize", ringSize).Msg("[timeshift] No keyframe yet, starting live")
 		r.childStateMu.Lock()
 		r.childState[child] = &childBufferState{mode: "live"}
 		r.childStateMu.Unlock()
@@ -344,7 +349,7 @@ func (r *Receiver) startChildInBufferMode(child *Node) {
 	r.childState[child] = state
 	r.childStateMu.Unlock()
 
-	log.Debug().Uint32("childId", child.id).Int("startPos", startPos).Int("keyframePos", keyframePos).Int("paramSetsFound", paramSetsFound).Msg("[timeshift] Starting from buffer with param sets")
+	log.Info().Uint32("childId", child.id).Str("codec", codecName).Int("startPos", startPos).Int("keyframePos", keyframePos).Int("paramSetsFound", paramSetsFound).Int("ringSize", ringSize).Msg("[timeshift] Starting from buffer with param sets")
 
 	// Start pump goroutine to feed buffered packets
 	go r.pumpBufferToChild(child, state)
@@ -443,7 +448,7 @@ func (r *Receiver) pumpBufferToChild(child *Node, state *childBufferState) {
 
 		// Check if we've caught up to live position
 		if state.readPos == head {
-			log.Debug().Uint32("childId", child.id).Int("sent", packetsent).Int("burst", burstPackets).Msg("[timeshift] Caught up, switching to live")
+			log.Info().Uint32("childId", child.id).Int("sent", packetsent).Int("burst", burstPackets).Msg("[timeshift] Caught up, switching to live")
 			r.childStateMu.Lock()
 			state.mode = "live"
 			r.childStateMu.Unlock()

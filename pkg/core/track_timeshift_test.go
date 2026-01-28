@@ -159,8 +159,10 @@ func TestChildStartsInBufferMode(t *testing.T) {
 	if mode != "buffering" {
 		t.Errorf("Expected child mode 'buffering', got '%s'", mode)
 	}
-	if readPos != 3 { // Should start at keyframe position
-		t.Errorf("Expected readPos 3 (keyframe), got %d", readPos)
+	// Should start at param sets position (0), not keyframe position (3)
+	// We include VPS/SPS/PPS before the keyframe for decoder init
+	if readPos != 0 {
+		t.Errorf("Expected readPos 0 (param sets), got %d", readPos)
 	}
 
 	// Wait for pump to send some packets

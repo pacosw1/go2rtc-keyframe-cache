@@ -403,6 +403,8 @@ func (r *Receiver) pumpBufferToChild(child *Node, state *childBufferState) {
 	packetsent := 0
 	keyframeSent := false
 	burstPackets := 0 // Count packets sent in initial burst (no delay)
+	var firstTimestamp, lastTimestamp uint32
+	nalTypesFound := make(map[string]int)
 
 	for {
 		select {
@@ -434,6 +436,22 @@ func (r *Receiver) pumpBufferToChild(child *Node, state *childBufferState) {
 			continue
 		}
 
+		// Track timestamps for debugging
+		if packetsent == 0 {
+			firstTimestamp = packet.Timestamp
+		}
+		lastTimestamp = packet.Timestamp
+
+		// Classify and track NAL types for debugging
+		info := r.classifyNAL(packet)
+		if info.isIDR {
+			nalTypesFound["keyframe"]++
+		} else if info.isParamSet {
+			nalTypesFound["paramset"]++
+		} else {
+			nalTypesFound["other"]++
+		}
+
 		// Check if this is the keyframe position
 		if readPos == keyframePos {
 			keyframeSent = true
@@ -448,7 +466,16 @@ func (r *Receiver) pumpBufferToChild(child *Node, state *childBufferState) {
 
 		// Check if we've caught up to live position
 		if state.readPos == head {
-			log.Info().Uint32("childId", child.id).Int("sent", packetsent).Int("burst", burstPackets).Msg("[timeshift] Caught up, switching to live")
+			log.Info().
+				Uint32("childId", child.id).
+				Int("sent", packetsent).
+				Int("burst", burstPackets).
+				Uint32("firstTs", firstTimestamp).
+				Uint32("lastTs", lastTimestamp).
+				Int("keyframes", nalTypesFound["keyframe"]).
+				Int("paramsets", nalTypesFound["paramset"]).
+				Int("other", nalTypesFound["other"]).
+				Msg("[timeshift] Caught up, switching to live")
 			r.childStateMu.Lock()
 			state.mode = "live"
 			r.childStateMu.Unlock()

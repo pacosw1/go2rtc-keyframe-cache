@@ -315,17 +315,41 @@ func (r *Receiver) startChildInBufferMode(child *Node) {
 	// Cameras typically send VPS→SPS→PPS→IDR, so scan backwards to find them
 	startPos := keyframePos
 	paramSetsFound := 0
-	for i := 1; i <= 10 && paramSetsFound < 3; i++ {
+
+	// Debug: log NAL types around keyframe
+	var nalTypesAround []string
+	for i := 1; i <= 15; i++ {
 		checkPos := (keyframePos - i + bufferLen) % bufferLen
 		if r.ringBuffer[checkPos] != nil {
 			info := r.classifyNAL(r.ringBuffer[checkPos])
-			if info.isParamSet {
+			nalTypesAround = append(nalTypesAround, info.typeName)
+			if info.isParamSet && paramSetsFound < 3 {
 				startPos = checkPos
 				paramSetsFound++
 			}
 		}
 	}
 	r.ringMu.RUnlock()
+
+	// Check the keyframe packet itself
+	var keyframeNALType byte
+	var keyframePayloadLen int
+	if keyframePos >= 0 && r.ringBuffer[keyframePos] != nil {
+		kfPacket := r.ringBuffer[keyframePos]
+		keyframePayloadLen = len(kfPacket.Payload)
+		if keyframePayloadLen >= 1 {
+			keyframeNALType = (kfPacket.Payload[0] >> 1) & 0x3F
+		}
+	}
+
+	// Log what we found around the keyframe
+	log.Info().
+		Int("keyframePos", keyframePos).
+		Strs("nalTypesBeforeKF", nalTypesAround).
+		Int("paramSetsFound", paramSetsFound).
+		Uint8("keyframeNALType", keyframeNALType).
+		Int("keyframePayloadLen", keyframePayloadLen).
+		Msg("[timeshift] Buffer scan results")
 
 	// If no keyframe in buffer yet, start in live mode
 	if keyframePos < 0 || ringSize == 0 {

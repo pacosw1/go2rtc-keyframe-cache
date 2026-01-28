@@ -6,11 +6,20 @@ import (
 	"github.com/AlexxIT/go2rtc/pkg/core"
 	"github.com/AlexxIT/go2rtc/pkg/h264"
 	"github.com/pion/rtp"
+	"github.com/rs/zerolog/log"
 )
 
 func RTPDepay(codec *core.Codec, handler core.HandlerFunc) core.HandlerFunc {
 	vps, sps, pps := GetParameterSet(codec.FmtpLine)
 	ps := h264.JoinNALU(vps, sps, pps)
+
+	// Log param set extraction once
+	log.Info().
+		Int("vpsLen", len(vps)).
+		Int("spsLen", len(sps)).
+		Int("ppsLen", len(pps)).
+		Int("totalPsLen", len(ps)).
+		Msg("[h265-rtpdepay] Param sets from FmtpLine")
 
 	buf := make([]byte, 0, 512*1024) // 512K
 	var nuStart int
@@ -52,6 +61,7 @@ func RTPDepay(codec *core.Codec, handler core.HandlerFunc) core.HandlerFunc {
 
 				// push PS data before keyframe
 				if len(buf) == 0 && nuType >= 19 && nuType <= 21 {
+					log.Info().Int("psLen", len(ps)).Uint8("nuType", nuType).Uint16("seqNum", packet.SequenceNumber).Msg("[h265-rtpdepay] Prepending param sets to keyframe")
 					buf = append(buf, ps...)
 				}
 
